@@ -4,8 +4,9 @@
   "description": "Minecraft AI bot with Groq integration",
   "main": "mineflayer_bot.js",
   "dependencies": {
-    "mineflayer": "^4.14.0",
-    "mineflayer-pathfinder": "^2.4.0",
-    "vec3": "^0.1.7"
+    "mineflayer": "latest",
+    "mineflayer-pathfinder": "latest",
+    "minecraft-data": "latest",
+    "vec3": "latest"
   }
 }
