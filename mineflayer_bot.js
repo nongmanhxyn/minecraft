@@ -6,8 +6,8 @@ const readline = require('readline'); // Kéo ra ngoài
 
 const args = process.argv.slice(2);
 const username = args[0] || 'Bot';
-const host = args[1] || 'localhost';
-const port = parseInt(args[2]) || 25565;
+const host = args[1] || 'dynamic-8.magmanode.com';
+const port = parseInt(args[2]) || 25788;
 const version = args[3] || '1.21.11';
 
 let bot;
