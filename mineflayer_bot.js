@@ -2,7 +2,7 @@ const mineflayer = require('mineflayer');
 const pathfinder = require('mineflayer-pathfinder').pathfinder;
 const { GoalNear } = require('mineflayer-pathfinder').goals;
 const Vec3 = require('vec3');
-const readline = require('readline'); // Kéo ra ngoài
+const readline = require('readline');
 
 const args = process.argv.slice(2);
 const username = args[0] || 'Bot';
@@ -12,9 +12,9 @@ const version = args[3] || '1.21.11';
 
 let bot;
 let reconnectAttempts = 0;
-const maxReconnectDelay = 30000; 
+const maxReconnectDelay = 30000; // tối đa 30 giây
 
-// ===== CHUYỂN READLINE RA NGOÀI =====
+// ===== READLINE TÁCH BIỆT TRÁNH DÍN LISTENER KHI RECONNECT =====
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -22,13 +22,12 @@ const rl = readline.createInterface({
 });
 
 rl.on('line', (line) => {
-    if (!bot) return; // Bỏ qua nếu bot chưa sẵn sàng
+    if (!bot) return;
     try {
         const cmd = JSON.parse(line);
         handleCommand(cmd, bot);
     } catch (e) {
-        // Đổi log thành console.error để Python không bị vỡ JSON parse
-        console.error(`[${username}] Invalid command format:`, e.message); 
+        console.error(`[${username}] Invalid command:`, e.message);
     }
 });
 
@@ -46,7 +45,7 @@ function handleCommand(cmd, bot) {
                 entity.mobType !== 'Armor Stand'
             );
             if (hostile) bot.attack(hostile);
-            else console.error(`[${username}] No hostile nearby`); // Đổi sang error
+            else console.error(`[${username}] No hostile nearby`);
             break;
         }
         case 'mineBlock': {
@@ -56,7 +55,7 @@ function handleCommand(cmd, bot) {
                     if (err) console.error(`[${username}] Dig error:`, err.message);
                 });
             } else {
-                console.error(`[${username}] Cannot mine block at ${cmd.x}, ${cmd.y}, ${cmd.z}`);
+                console.error(`[${username}] Cannot mine block`);
             }
             break;
         }
@@ -75,18 +74,18 @@ function handleCommand(cmd, bot) {
             console.error(`[${username}] Unknown action:`, cmd.action);
     }
 }
-// ===================================
 
 function createBot() {
     const botInstance = mineflayer.createBot({ host, port, username, version });
     botInstance.loadPlugin(pathfinder);
 
-    // Bắt event spawn để reset reconnectAttempts
+    // Reset đếm reconnect khi đã vào game thành công
     botInstance.on('spawn', () => {
         reconnectAttempts = 0;
         console.error(`[${username}] Đã vào game thành công!`);
     });
 
+    // Gửi trạng thái định kỳ mỗi giây
     const statusInterval = setInterval(() => {
         if (!botInstance.entity) return;
         const status = {
@@ -114,11 +113,15 @@ function createBot() {
         process.stdout.write(JSON.stringify(status) + '\n');
     }, 1000);
 
+    // ===== FALLBACK: Tự động respawn khi chết =====
     botInstance.on('death', () => {
-        console.error(`[${username}] Đã chết, tự động respawn...`); // Đổi sang error
-        setTimeout(() => botInstance.respawn(), 1000);
+        console.error(`[${username}] Đã chết, tự động respawn...`);
+        setTimeout(() => {
+            botInstance.respawn();
+        }, 1000);
     });
 
+    // ===== FALLBACK: Reconnect khi bị kick hoặc mất kết nối =====
     botInstance.on('end', (reason) => {
         console.error(`[${username}] Mất kết nối: ${reason}`);
         clearInterval(statusInterval);
@@ -141,11 +144,13 @@ function createBot() {
 function attemptReconnect() {
     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay);
     reconnectAttempts++;
-    console.error(`[${username}] Thử kết nối lại sau ${delay/1000}s...`); // Đổi sang error
+    console.error(`[${username}] Thử kết nối lại sau ${delay/1000}s...`);
     setTimeout(() => {
         bot = createBot();
     }, delay);
 }
 
+// Khởi động bot lần đầu
 bot = createBot();
+
 process.on('uncaughtException', (err) => console.error(`[${username}] Uncaught:`, err.message));
