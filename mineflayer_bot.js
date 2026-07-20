@@ -7,7 +7,7 @@ const args = process.argv.slice(2);
 const username = args[0] || 'Bot';
 const host = args[1] || 'localhost';
 const port = parseInt(args[2]) || 25565;
-const version = args[3] || '1.21.1';
+const version = args[3] || '1.21.11';
 
 let bot;
 let reconnectAttempts = 0;
