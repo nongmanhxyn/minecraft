@@ -11,10 +11,7 @@ const port = parseInt(args[2]) || 25788;
 const version = args[3] || '1.21.11';
 
 let bot;
-let reconnectAttempts = 0;
-const maxReconnectDelay = 30000; // tối đa 30 giây
 
-// ===== READLINE TÁCH BIỆT TRÁNH DÍN LISTENER KHI RECONNECT =====
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -45,7 +42,6 @@ function handleCommand(cmd, bot) {
                 entity.mobType !== 'Armor Stand'
             );
             if (hostile) bot.attack(hostile);
-            else console.error(`[${username}] No hostile nearby`);
             break;
         }
         case 'mineBlock': {
@@ -54,38 +50,29 @@ function handleCommand(cmd, bot) {
                 bot.dig(block, (err) => {
                     if (err) console.error(`[${username}] Dig error:`, err.message);
                 });
-            } else {
-                console.error(`[${username}] Cannot mine block`);
-            }
-            break;
-        }
-        case 'placeBlock': {
-            const placeAgainst = bot.blockAt(new Vec3(cmd.x, cmd.y - 1, cmd.z));
-            if (placeAgainst) {
-                bot.placeBlock(placeAgainst, new Vec3(0, 1, 0), (err) => {
-                    if (err) console.error(`[${username}] Place error:`, err.message);
-                });
-            } else {
-                console.error(`[${username}] No block to place against`);
             }
             break;
         }
         default:
-            console.error(`[${username}] Unknown action:`, cmd.action);
+            break;
     }
 }
 
 function createBot() {
-    const botInstance = mineflayer.createBot({ host, port, username, version });
+    const botInstance = mineflayer.createBot({ 
+        host, 
+        port, 
+        username, 
+        version,
+        checkTimeoutInterval: 120000 // Chờ timeout 2 phút tránh văng do ping lag
+    });
+    
     botInstance.loadPlugin(pathfinder);
 
-    // Reset đếm reconnect khi đã vào game thành công
     botInstance.on('spawn', () => {
-        reconnectAttempts = 0;
-        console.error(`[${username}] Đã vào game thành công!`);
+        console.error(`[${username}] Spawn thành công!`);
     });
 
-    // Gửi trạng thái định kỳ mỗi giây
     const statusInterval = setInterval(() => {
         if (!botInstance.entity) return;
         const status = {
@@ -113,44 +100,27 @@ function createBot() {
         process.stdout.write(JSON.stringify(status) + '\n');
     }, 1000);
 
-    // ===== FALLBACK: Tự động respawn khi chết =====
     botInstance.on('death', () => {
-        console.error(`[${username}] Đã chết, tự động respawn...`);
-        setTimeout(() => {
-            botInstance.respawn();
-        }, 1000);
+        setTimeout(() => botInstance.respawn(), 1000);
     });
 
-    // ===== FALLBACK: Reconnect khi bị kick hoặc mất kết nối =====
+    // Thoát ngay để Python tự restart sạch
     botInstance.on('end', (reason) => {
-        console.error(`[${username}] Mất kết nối: ${reason}`);
+        console.error(`[${username}] Mất kết nối (${reason})`);
         clearInterval(statusInterval);
-        attemptReconnect();
+        process.exit(1);
     });
 
     botInstance.on('kicked', (reason) => {
-        console.error(`[${username}] Bị kick: ${reason}`);
+        console.error(`[${username}] Bị kick (${reason})`);
         clearInterval(statusInterval);
-        attemptReconnect();
+        process.exit(1);
     });
 
-    botInstance.on('error', (err) => {
-        console.error(`[${username}] Lỗi:`, err.message);
-    });
+    botInstance.on('error', (err) => console.error(`[${username}] Lỗi:`, err.message));
 
     return botInstance;
 }
 
-function attemptReconnect() {
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay);
-    reconnectAttempts++;
-    console.error(`[${username}] Thử kết nối lại sau ${delay/1000}s...`);
-    setTimeout(() => {
-        bot = createBot();
-    }, delay);
-}
-
-// Khởi động bot lần đầu
 bot = createBot();
-
 process.on('uncaughtException', (err) => console.error(`[${username}] Uncaught:`, err.message));
