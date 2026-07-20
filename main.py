@@ -14,9 +14,9 @@ load_dotenv()
 
 # ========== CẤU HÌNH CHUNG ==========
 BOT_NAMES = ["BotAlpha", "BotBeta", "BotGamma"]
-MINECRAFT_HOST = os.getenv("MINECRAFT_HOST", "dynamic-8.magmanode.com")
-MINECRAFT_PORT = int(os.getenv("MINECRAFT_PORT", "25788"))
-MINECRAFT_VERSION = os.getenv("MINECRAFT_VERSION", "1.21.11")
+MINECRAFT_HOST = "dynamic-8.magmanode.com"
+MINECRAFT_PORT = 25788
+MINECRAFT_VERSION = "1.21.11"
 
 # ========== LỚP KEY POOL ==========
 class GroqKeyPool:
@@ -97,7 +97,7 @@ class MinecraftBot:
                 try:
                     data = json.loads(line.decode().strip())
                     if data.get("event") == "status":
-                        self.state["position"] = tuple(data.get("position", (0,0,0)))
+                        self.state["position"] = tuple(data.get("position", (0, 0, 0)))
                         self.state["health"] = data.get("health", 20)
                         self.state["entities"] = data.get("entities", [])
                         self.state["time"] = data.get("time", "day")
