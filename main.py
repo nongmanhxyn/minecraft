@@ -167,7 +167,7 @@ Chỉ trả về JSON, không kèm markdown. Ví dụ: {{"actions": [{{"type": "
                 client = await self.key_pool.get_client()
                 self.current_client = client
                 response = client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model="mixtral-8x7b-32768",
                     messages=[
                         {"role": "system", "content": "Bạn là trợ lý chỉ xuất JSON hợp lệ."},
                         {"role": "user", "content": prompt}
