@@ -5,7 +5,7 @@ import sys
 from typing import Dict, List
 from dotenv import load_dotenv
 
-from groq import AsyncGroq, RateLimitError  # Dùng AsyncGroq chuẩn bất đồng bộ
+from groq import AsyncGroq, RateLimitError
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -18,7 +18,7 @@ MINECRAFT_HOST = "dynamic-8.magmanode.com"
 MINECRAFT_PORT = 25788
 MINECRAFT_VERSION = "1.21.11"
 
-# ========== LỚP KEY POOL (ASYNC) ==========
+# ========== LỚP KEY POOL ==========
 class GroqKeyPool:
     def __init__(self, keys: List[str]):
         if not keys:
@@ -35,7 +35,7 @@ class GroqKeyPool:
     async def report_rate_limit(self):
         async with self.lock:
             self.current_index = (self.current_index + 1) % len(self.keys)
-            print(f"Rate limit hit, chuyển sang key index {self.current_index}")
+            print(f"[KeyPool] Rate limit hit, chuyển sang key index {self.current_index}")
 
 # ========== LỚP MINECRAFT BOT ==========
 class MinecraftBot:
@@ -61,7 +61,7 @@ class MinecraftBot:
     async def start(self):
         while not self.stop_event.is_set():
             try:
-                print(f"[{self.name}] Đang khởi động process Node.js...")
+                print(f"[{self.name}] Đang kết nối tới server qua Node.js...")
                 self.process = await asyncio.create_subprocess_exec(
                     "node", "mineflayer_bot.js",
                     self.name, self.host, str(self.port), self.version,
@@ -70,25 +70,23 @@ class MinecraftBot:
                     stderr=asyncio.subprocess.PIPE
                 )
                 
-                # Task đọc stderr riêng để log lỗi Node ra console Python
                 asyncio.create_task(self.read_stderr())
-                
                 await self.read_stdout_until_close()
+                
                 if not self.stop_event.is_set():
-                    print(f"[{self.name}] Process node bị dừng, khởi động lại sau 5 giây...")
-                    await asyncio.sleep(5)
+                    print(f"[{self.name}] Process bị ngắt, thử kết nối lại sau 10 giây...")
+                    await asyncio.sleep(10)
             except Exception as e:
-                print(f"[{self.name}] Lỗi khi khởi động process: {e}")
-                await asyncio.sleep(5)
+                print(f"[{self.name}] Lỗi process: {e}")
+                await asyncio.sleep(10)
 
     async def read_stderr(self):
-        """Đọc stderr từ Node.js để hiển thị log chuẩn mà không phá JSON"""
         try:
             while self.process and self.process.returncode is None:
                 line = await self.process.stderr.readline()
                 if not line:
                     break
-                print(f"[{self.name} Node Log]: {line.decode().strip()}")
+                print(f"[{self.name} Node]: {line.decode().strip()}")
         except Exception:
             pass
 
@@ -114,13 +112,15 @@ class MinecraftBot:
                 self.process.terminate()
 
     async def message_processor(self):
+        """Xử lý tin nhắn nội bộ gửi tới bot này"""
         while not self.stop_event.is_set():
             try:
                 msg = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
                 self.state["messages"].append(msg)
                 if len(self.state["messages"]) > 10:
                     self.state["messages"].pop(0)
-                print(f"[{self.name}] Nhận tin nhắn từ {msg['from']}: {msg['text']}")
+                # In ra log Render để theo dõi trò chuyện
+                print(f"💬 [CHAT NỘI BỘ] {msg['from']} ➔ {self.name}: \"{msg['text']}\"")
                 self.new_message_event.set()
             except asyncio.TimeoutError:
                 pass
@@ -136,21 +136,37 @@ class MinecraftBot:
         msgs = "\n".join([
             f"{m['from']}: {m['text']}" for m in self.state["messages"]
         ])
-        return f"""Bạn là bot Minecraft tên {self.name}, thành viên của đội gồm BotAlpha, BotBeta, BotGamma.
-Đội của bạn đoàn kết tuyệt đối: luôn hỗ trợ, bảo vệ lẫn nhau, chia sẻ tài nguyên, cùng xây dựng căn cứ chung.
-Mục tiêu chung: sinh tồn, thu thập tài nguyên, xây nhà tập thể, tiêu diệt quái vật và bảo vệ đồng đội.
+        
+        other_bots = [b for b in BOT_NAMES if b != self.name]
+
+        return f"""Bạn là bot Minecraft tên {self.name}, đồng đội cùng nhóm với {', '.join(other_bots)}.
+Nhóm bạn sinh tồn cùng nhau, trao đổi thông tin và chia sẻ nhiệm vụ.
 
 Tình huống hiện tại:
 - Vị trí: {pos}
 - Máu: {health}
-- Thời gian: {time}
-- Thực thể gần nhất:
+- Thời gian trong game: {time}
+- Thực thể xung quanh:
 {entities_desc if entities_desc else "Không có"}
-- Tin nhắn từ đồng đội:
-{msgs if msgs else "Không có"}
+- Tin nhắn nội bộ gần đây từ đồng đội:
+{msgs if msgs else "Chưa có tin nhắn mới"}
 
-Hãy chọn hành động tiếp theo. Trả về JSON với khóa "actions" chứa danh sách hành động.
-Ví dụ: {{"actions": [{{"type": "moveTo", "x": 10, "y": 64, "z": 10}}]}}"""
+Hãy đưa ra quyết định hành động tiếp theo.
+Trả về định dạng JSON duy nhất. Danh sách "actions" có thể kết hợp di chuyển/đào/đánh và trò chuyện nội bộ với đồng đội.
+
+Các action khả thi:
+1. Trò chuyện nội bộ (không hiện lên game): {{"type": "sendMessageToBot", "botName": "{other_bots[0]}", "message": "Nội dung cần nói"}}
+2. Di chuyển: {{"type": "moveTo", "x": {pos[0]}, "y": {pos[1]}, "z": {pos[2]}}}
+3. Tấn công: {{"type": "attack", "target": "nearest_hostile"}}
+4. Đào block: {{"type": "mineBlock", "x": {pos[0]}, "y": {pos[1]-1}, "z": {pos[2]}}}
+
+Ví dụ mẫu JSON:
+{{
+  "actions": [
+    {{"type": "sendMessageToBot", "botName": "{other_bots[0]}", "message": "Tui đang đứng ở {pos}, ông đang làm gì đấy?"}},
+    {{"type": "moveTo", "x": {pos[0]+2}, "y": {pos[1]}, "z": {pos[2]+2}}}
+  ]
+}}"""
 
     async def call_groq_with_retry(self, prompt: str, max_retries=None):
         if max_retries is None:
@@ -159,46 +175,44 @@ Ví dụ: {{"actions": [{{"type": "moveTo", "x": 10, "y": 64, "z": 10}}]}}"""
         while retries < max_retries:
             try:
                 client = await self.key_pool.get_client()
-                # Dùng AWAIT cho AsyncGroq để không đơ event loop
                 response = await client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[
-                        {"role": "system", "content": "Bạn là trợ lý chỉ xuất JSON hợp lệ."},
+                        {"role": "system", "content": "Bạn là AI bot Minecraft, chỉ xuất duy nhất định dạng JSON."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
-                    max_tokens=500,
+                    max_tokens=400,
                     response_format={"type": "json_object"}
                 )
                 return response.choices[0].message.content
             except RateLimitError:
-                print(f"[{self.name}] Rate limit, chuyển key... ({retries+1}/{max_retries})")
                 await self.key_pool.report_rate_limit()
                 retries += 1
                 await asyncio.sleep(1)
             except Exception as e:
-                print(f"[{self.name}] Lỗi Groq: {e}")
+                print(f"[{self.name}] Lỗi Groq API: {e}")
                 retries += 1
                 await asyncio.sleep(2)
-        raise RuntimeError(f"[{self.name}] Hết số lần thử gọi Groq API")
+        raise RuntimeError(f"[{self.name}] Hết key Groq khả dụng")
 
     async def make_decision(self):
         try:
             prompt = self.build_prompt()
             content = await self.call_groq_with_retry(prompt)
-            print(f"[{self.name}] AI phản hồi: {content}")
             data = json.loads(content)
             actions = data.get("actions", [])
             self.state["last_action"] = actions
             for action in actions:
                 await self.execute_action(action)
         except Exception as e:
-            print(f"[{self.name}] Lỗi quyết định: {e}")
+            print(f"[{self.name}] Lỗi suy nghĩ decision: {e}")
 
     async def decision_loop(self):
-        await asyncio.sleep(8)  # Chờ 8s cho bot spawn hẳn vào game
+        await asyncio.sleep(10)  # Chờ 10s cho spawn xong
         while not self.stop_event.is_set():
             try:
+                # Nếu có tin nhắn mới từ đồng đội thì phản hồi ngay, không thì 8s suy nghĩ 1 lần
                 await asyncio.wait_for(self.new_message_event.wait(), timeout=8.0)
                 self.new_message_event.clear()
                 await self.make_decision()
@@ -206,34 +220,34 @@ Ví dụ: {{"actions": [{{"type": "moveTo", "x": 10, "y": 64, "z": 10}}]}}"""
                 await self.make_decision()
 
     async def execute_action(self, action: dict):
+        action_type = action.get("type")
+        
+        # Xử lý trò chuyện nội bộ (Chỉ gửi qua Queue Python, KHÔNG gửi vào game)
+        if action_type == "sendMessageToBot":
+            target = action.get("botName")
+            message = action.get("message")
+            if target and message:
+                await self.send_bot_message(target, message)
+            return
+
         if not self.process or self.process.returncode is not None:
             return
-        action_type = action.get("type")
+
+        # Các hành động trong game
+        cmd = None
         if action_type == "moveTo":
             cmd = {"action": "moveTo", "x": action["x"], "y": action["y"], "z": action["z"]}
         elif action_type == "attack":
             cmd = {"action": "attack", "target": action.get("target", "nearest_hostile")}
         elif action_type == "mineBlock":
             cmd = {"action": "mineBlock", "x": action["x"], "y": action["y"], "z": action["z"]}
-        elif action_type == "placeBlock":
-            cmd = {
-                "action": "placeBlock",
-                "x": action["x"], "y": action["y"], "z": action["z"],
-                "blockType": action.get("blockType", "dirt")
-            }
-        elif action_type == "sendMessageToBot":
-            target = action.get("botName")
-            message = action.get("message")
-            if target and message:
-                await self.send_bot_message(target, f"{self.name}: {message}")
-            return
-        else:
-            return
-        try:
-            self.process.stdin.write((json.dumps(cmd) + "\n").encode())
-            await self.process.stdin.drain()
-        except Exception as e:
-            print(f"[{self.name}] Lỗi gửi lệnh: {e}")
+
+        if cmd:
+            try:
+                self.process.stdin.write((json.dumps(cmd) + "\n").encode())
+                await self.process.stdin.drain()
+            except Exception as e:
+                print(f"[{self.name}] Lỗi gửi lệnh Node: {e}")
 
     async def send_bot_message(self, target: str, text: str):
         pass
@@ -301,6 +315,7 @@ async def main():
         bots.append(bot)
         bot_instances[name] = bot
 
+    # Kết nối kênh tin nhắn riêng tư giữa các bot
     for sender_bot in bots:
         def make_sender(bot_name):
             async def send_message(target: str, text: str):
@@ -309,15 +324,15 @@ async def main():
             return send_message
         sender_bot.send_bot_message = make_sender(sender_bot.name)
 
-    # Bật bot cách nhau 3 giây để Magmanode không kick vì spam login
+    # Delay spawn 4s để tránh nghẽn socket
     for bot in bots:
         asyncio.create_task(bot.start())
         asyncio.create_task(bot.decision_loop())
         asyncio.create_task(bot.message_processor())
-        await asyncio.sleep(3) 
+        await asyncio.sleep(4)
 
-    print("Tất cả bot đã khởi động xong.")
-    print(f"=== CHECK KEYS ===\nAlpha: {os.getenv('GROQ_KEYS_BOTALPHA')}\nBeta: {os.getenv('GROQ_KEYS_BOTBETA')}\nGamma: {os.getenv('GROQ_KEYS_BOTGAMMA')}\n==================")
+    print("Tất cả bot đã khởi động xong!")
+
     port = int(os.getenv("PORT", "8000"))
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
