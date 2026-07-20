@@ -2,6 +2,7 @@ const mineflayer = require('mineflayer');
 const pathfinder = require('mineflayer-pathfinder').pathfinder;
 const { GoalNear } = require('mineflayer-pathfinder').goals;
 const Vec3 = require('vec3');
+const readline = require('readline'); // Kéo ra ngoài
 
 const args = process.argv.slice(2);
 const username = args[0] || 'Bot';
@@ -11,13 +12,81 @@ const version = args[3] || '1.21.11';
 
 let bot;
 let reconnectAttempts = 0;
-const maxReconnectDelay = 30000; // tối đa 30 giây
+const maxReconnectDelay = 30000; 
+
+// ===== CHUYỂN READLINE RA NGOÀI =====
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false
+});
+
+rl.on('line', (line) => {
+    if (!bot) return; // Bỏ qua nếu bot chưa sẵn sàng
+    try {
+        const cmd = JSON.parse(line);
+        handleCommand(cmd, bot);
+    } catch (e) {
+        // Đổi log thành console.error để Python không bị vỡ JSON parse
+        console.error(`[${username}] Invalid command format:`, e.message); 
+    }
+});
+
+function handleCommand(cmd, bot) {
+    switch (cmd.action) {
+        case 'moveTo': {
+            const { x, y, z } = cmd;
+            bot.pathfinder.setGoal(new GoalNear(x, y, z, 1));
+            break;
+        }
+        case 'attack': {
+            const hostile = bot.nearestEntity(entity =>
+                entity.type === 'mob' &&
+                entity.mobType !== 'Player' &&
+                entity.mobType !== 'Armor Stand'
+            );
+            if (hostile) bot.attack(hostile);
+            else console.error(`[${username}] No hostile nearby`); // Đổi sang error
+            break;
+        }
+        case 'mineBlock': {
+            const block = bot.blockAt(new Vec3(cmd.x, cmd.y, cmd.z));
+            if (block && bot.canDigBlock(block)) {
+                bot.dig(block, (err) => {
+                    if (err) console.error(`[${username}] Dig error:`, err.message);
+                });
+            } else {
+                console.error(`[${username}] Cannot mine block at ${cmd.x}, ${cmd.y}, ${cmd.z}`);
+            }
+            break;
+        }
+        case 'placeBlock': {
+            const placeAgainst = bot.blockAt(new Vec3(cmd.x, cmd.y - 1, cmd.z));
+            if (placeAgainst) {
+                bot.placeBlock(placeAgainst, new Vec3(0, 1, 0), (err) => {
+                    if (err) console.error(`[${username}] Place error:`, err.message);
+                });
+            } else {
+                console.error(`[${username}] No block to place against`);
+            }
+            break;
+        }
+        default:
+            console.error(`[${username}] Unknown action:`, cmd.action);
+    }
+}
+// ===================================
 
 function createBot() {
     const botInstance = mineflayer.createBot({ host, port, username, version });
     botInstance.loadPlugin(pathfinder);
 
-    // Gửi trạng thái định kỳ mỗi giây
+    // Bắt event spawn để reset reconnectAttempts
+    botInstance.on('spawn', () => {
+        reconnectAttempts = 0;
+        console.error(`[${username}] Đã vào game thành công!`);
+    });
+
     const statusInterval = setInterval(() => {
         if (!botInstance.entity) return;
         const status = {
@@ -45,91 +114,25 @@ function createBot() {
         process.stdout.write(JSON.stringify(status) + '\n');
     }, 1000);
 
-    // Đọc lệnh từ stdin
-    const readline = require('readline');
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        terminal: false
-    });
-
-    rl.on('line', (line) => {
-        try {
-            const cmd = JSON.parse(line);
-            handleCommand(cmd, botInstance);
-        } catch (e) {
-            console.error('Invalid command:', e);
-        }
-    });
-
-    function handleCommand(cmd, bot) {
-        switch (cmd.action) {
-            case 'moveTo': {
-                const { x, y, z } = cmd;
-                bot.pathfinder.setGoal(new GoalNear(x, y, z, 1));
-                break;
-            }
-            case 'attack': {
-                const hostile = bot.nearestEntity(entity =>
-                    entity.type === 'mob' &&
-                    entity.mobType !== 'Player' &&
-                    entity.mobType !== 'Armor Stand'
-                );
-                if (hostile) bot.attack(hostile);
-                else console.error('No hostile nearby');
-                break;
-            }
-            case 'mineBlock': {
-                const block = bot.blockAt(new Vec3(cmd.x, cmd.y, cmd.z));
-                if (block && bot.canDigBlock(block)) {
-                    bot.dig(block, (err) => {
-                        if (err) console.error('Dig error:', err);
-                    });
-                } else {
-                    console.error('Cannot mine block');
-                }
-                break;
-            }
-            case 'placeBlock': {
-                const placeAgainst = bot.blockAt(new Vec3(cmd.x, cmd.y - 1, cmd.z));
-                if (placeAgainst) {
-                    bot.placeBlock(placeAgainst, new Vec3(0, 1, 0), (err) => {
-                        if (err) console.error('Place error:', err);
-                    });
-                } else {
-                    console.error('No block to place against');
-                }
-                break;
-            }
-            default:
-                console.error('Unknown action:', cmd.action);
-        }
-    }
-
-    // ===== FALLBACK: Tự động respawn khi chết =====
     botInstance.on('death', () => {
-        console.log(`[${username}] Đã chết, tự động respawn...`);
-        setTimeout(() => {
-            botInstance.respawn();
-        }, 1000);
+        console.error(`[${username}] Đã chết, tự động respawn...`); // Đổi sang error
+        setTimeout(() => botInstance.respawn(), 1000);
     });
 
-    // ===== FALLBACK: Reconnect khi bị kick hoặc mất kết nối =====
     botInstance.on('end', (reason) => {
-        console.log(`[${username}] Mất kết nối: ${reason}`);
+        console.error(`[${username}] Mất kết nối: ${reason}`);
         clearInterval(statusInterval);
         attemptReconnect();
     });
 
     botInstance.on('kicked', (reason) => {
-        console.log(`[${username}] Bị kick: ${reason}`);
+        console.error(`[${username}] Bị kick: ${reason}`);
         clearInterval(statusInterval);
         attemptReconnect();
     });
 
     botInstance.on('error', (err) => {
-        console.error(`[${username}] Lỗi:`, err);
-        // Không gọi attemptReconnect ở đây vì 'end' sẽ được gọi sau đó
+        console.error(`[${username}] Lỗi:`, err.message);
     });
 
     return botInstance;
@@ -138,13 +141,11 @@ function createBot() {
 function attemptReconnect() {
     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay);
     reconnectAttempts++;
-    console.log(`[${username}] Thử kết nối lại sau ${delay/1000}s...`);
+    console.error(`[${username}] Thử kết nối lại sau ${delay/1000}s...`); // Đổi sang error
     setTimeout(() => {
         bot = createBot();
     }, delay);
 }
 
-// Khởi động bot lần đầu
 bot = createBot();
-
-process.on('uncaughtException', (err) => console.error('Uncaught:', err));
+process.on('uncaughtException', (err) => console.error(`[${username}] Uncaught:`, err.message));
