@@ -49,6 +49,8 @@ class MinecraftBot:
         self.state = {
             "position": (0, 0, 0),
             "health": 20.0,
+            "food": 20.0,
+            "inventory": [],
             "time": "day",
             "entities": [],
             "messages": [],
@@ -101,6 +103,8 @@ class MinecraftBot:
                     if data.get("event") == "status":
                         self.state["position"] = tuple(data.get("position", (0, 0, 0)))
                         self.state["health"] = data.get("health", 20)
+                        self.state["food"] = data.get("food", 20)
+                        self.state["inventory"] = data.get("inventory", [])
                         self.state["entities"] = data.get("entities", [])
                         self.state["time"] = data.get("time", "day")
                 except Exception:
@@ -112,14 +116,12 @@ class MinecraftBot:
                 self.process.terminate()
 
     async def message_processor(self):
-        """Xử lý tin nhắn nội bộ gửi tới bot này"""
         while not self.stop_event.is_set():
             try:
                 msg = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
                 self.state["messages"].append(msg)
                 if len(self.state["messages"]) > 10:
                     self.state["messages"].pop(0)
-                # In ra log Render để theo dõi trò chuyện
                 print(f"💬 [CHAT NỘI BỘ] {msg['from']} ➔ {self.name}: \"{msg['text']}\"")
                 self.new_message_event.set()
             except asyncio.TimeoutError:
@@ -128,43 +130,47 @@ class MinecraftBot:
     def build_prompt(self):
         pos = self.state["position"]
         health = self.state["health"]
+        food = self.state["food"]
         time = self.state["time"]
+        inv_desc = ", ".join([f"{i['name']} (x{i['count']})" for i in self.state["inventory"]])
         entities_desc = "\n".join([
             f"- {e.get('name','entity')} ({e.get('type','')}) ở {e.get('position')}, cách {e.get('distance','?')}m"
             for e in self.state["entities"][:10]
         ])
-        msgs = "\n".join([
-            f"{m['from']}: {m['text']}" for m in self.state["messages"]
-        ])
+        msgs = "\n".join([f"{m['from']}: {m['text']}" for m in self.state["messages"]])
         
         other_bots = [b for b in BOT_NAMES if b != self.name]
 
         return f"""Bạn là bot Minecraft tên {self.name}, đồng đội cùng nhóm với {', '.join(other_bots)}.
-Nhóm bạn sinh tồn cùng nhau, trao đổi thông tin và chia sẻ nhiệm vụ.
+Nhóm bạn sinh tồn cùng nhau, trao đổi thông tin, thu thập tài nguyên và bảo vệ lẫn nhau.
 
 Tình huống hiện tại:
 - Vị trí: {pos}
-- Máu: {health}
+- Máu: {health}/20 | Độ đói: {food}/20
+- Túi đồ: {inv_desc if inv_desc else "Trống"}
 - Thời gian trong game: {time}
 - Thực thể xung quanh:
 {entities_desc if entities_desc else "Không có"}
 - Tin nhắn nội bộ gần đây từ đồng đội:
 {msgs if msgs else "Chưa có tin nhắn mới"}
 
-Hãy đưa ra quyết định hành động tiếp theo.
-Trả về định dạng JSON duy nhất. Danh sách "actions" có thể kết hợp di chuyển/đào/đánh và trò chuyện nội bộ với đồng đội.
+Hãy đưa ra danh sách các hành động tiếp theo dạng JSON duy nhất.
 
-Các action khả thi:
-1. Trò chuyện nội bộ (không hiện lên game): {{"type": "sendMessageToBot", "botName": "{other_bots[0]}", "message": "Nội dung cần nói"}}
-2. Di chuyển: {{"type": "moveTo", "x": {pos[0]}, "y": {pos[1]}, "z": {pos[2]}}}
-3. Tấn công: {{"type": "attack", "target": "nearest_hostile"}}
+Danh sách các action khả thi:
+1. Trò chuyện nội bộ: {{"type": "sendMessageToBot", "botName": "{other_bots[0]}", "message": "Nội dung"}}
+2. Di chuyển: {{"type": "moveTo", "x": {pos[0]+1}, "y": {pos[1]}, "z": {pos[2]+1}}}
+3. Đánh nhau / Tấn công: {{"type": "attack", "targetName": "zombie"}} (hoặc bỏ targetName để đánh mob gần nhất)
 4. Đào block: {{"type": "mineBlock", "x": {pos[0]}, "y": {pos[1]-1}, "z": {pos[2]}}}
+5. Đặt block: {{"type": "placeBlock", "x": {pos[0]}, "y": {pos[1]-1}, "z": {pos[2]}, "itemName": "cobblestone"}}
+6. Ăn uống (khi đói/mất máu): {{"type": "eat"}}
+7. Nhặt đồ văng quanh đây: {{"type": "collectItem"}}
+8. Tương tác (mở rương/cửa/nói chuyện NPC): {{"type": "interact", "x": {pos[0]}, "y": {pos[1]}, "z": {pos[2]}}}
 
-Ví dụ mẫu JSON:
+Ví dụ JSON trả về:
 {{
   "actions": [
-    {{"type": "sendMessageToBot", "botName": "{other_bots[0]}", "message": "Tui đang đứng ở {pos}, ông đang làm gì đấy?"}},
-    {{"type": "moveTo", "x": {pos[0]+2}, "y": {pos[1]}, "z": {pos[2]+2}}}
+    {{"type": "sendMessageToBot", "botName": "{other_bots[0]}", "message": "Tui đi nhặt đồ với đập cây nè"}},
+    {{"type": "collectItem"}}
   ]
 }}"""
 
@@ -209,10 +215,9 @@ Ví dụ mẫu JSON:
             print(f"[{self.name}] Lỗi suy nghĩ decision: {e}")
 
     async def decision_loop(self):
-        await asyncio.sleep(10)  # Chờ 10s cho spawn xong
+        await asyncio.sleep(10)
         while not self.stop_event.is_set():
             try:
-                # Nếu có tin nhắn mới từ đồng đội thì phản hồi ngay, không thì 8s suy nghĩ 1 lần
                 await asyncio.wait_for(self.new_message_event.wait(), timeout=8.0)
                 self.new_message_event.clear()
                 await self.make_decision()
@@ -222,7 +227,6 @@ Ví dụ mẫu JSON:
     async def execute_action(self, action: dict):
         action_type = action.get("type")
         
-        # Xử lý trò chuyện nội bộ (Chỉ gửi qua Queue Python, KHÔNG gửi vào game)
         if action_type == "sendMessageToBot":
             target = action.get("botName")
             message = action.get("message")
@@ -233,14 +237,21 @@ Ví dụ mẫu JSON:
         if not self.process or self.process.returncode is not None:
             return
 
-        # Các hành động trong game
         cmd = None
         if action_type == "moveTo":
             cmd = {"action": "moveTo", "x": action["x"], "y": action["y"], "z": action["z"]}
         elif action_type == "attack":
-            cmd = {"action": "attack", "target": action.get("target", "nearest_hostile")}
+            cmd = {"action": "attack", "targetName": action.get("targetName")}
         elif action_type == "mineBlock":
             cmd = {"action": "mineBlock", "x": action["x"], "y": action["y"], "z": action["z"]}
+        elif action_type == "placeBlock":
+            cmd = {"action": "placeBlock", "x": action["x"], "y": action["y"], "z": action["z"], "itemName": action.get("itemName")}
+        elif action_type == "eat":
+            cmd = {"action": "eat"}
+        elif action_type == "collectItem":
+            cmd = {"action": "collectItem"}
+        elif action_type == "interact":
+            cmd = {"action": "interact", "x": action.get("x"), "y": action.get("y"), "z": action.get("z"), "entityName": action.get("entityName")}
 
         if cmd:
             try:
@@ -264,6 +275,8 @@ async def get_status():
             "name": bot.name,
             "position": bot.state["position"],
             "health": bot.state["health"],
+            "food": bot.state["food"],
+            "inventory": bot.state["inventory"],
             "time": bot.state["time"],
             "entities": bot.state["entities"][:5],
             "messages": bot.state["messages"][-5:],
@@ -315,7 +328,6 @@ async def main():
         bots.append(bot)
         bot_instances[name] = bot
 
-    # Kết nối kênh tin nhắn riêng tư giữa các bot
     for sender_bot in bots:
         def make_sender(bot_name):
             async def send_message(target: str, text: str):
@@ -324,7 +336,6 @@ async def main():
             return send_message
         sender_bot.send_bot_message = make_sender(sender_bot.name)
 
-    # Delay spawn 4s để tránh nghẽn socket
     for bot in bots:
         asyncio.create_task(bot.start())
         asyncio.create_task(bot.decision_loop())
