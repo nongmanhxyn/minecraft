@@ -317,7 +317,7 @@ async def main():
         await asyncio.sleep(3) 
 
     print("Tất cả bot đã khởi động xong.")
-
+    print(f"=== CHECK KEYS ===\nAlpha: {os.getenv('GROQ_KEYS_BOTALPHA')}\nBeta: {os.getenv('GROQ_KEYS_BOTBETA')}\nGamma: {os.getenv('GROQ_KEYS_BOTGAMMA')}\n=================="
     port = int(os.getenv("PORT", "8000"))
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
