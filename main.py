@@ -16,7 +16,7 @@ load_dotenv()
 BOT_NAMES = ["BotAlpha", "BotBeta", "BotGamma"]
 MINECRAFT_HOST = os.getenv("MINECRAFT_HOST", "dynamic-8.magmanode.com")
 MINECRAFT_PORT = int(os.getenv("MINECRAFT_PORT", "25788"))
-MINECRAFT_VERSION = os.getenv("MINECRAFT_VERSION", "1.21.1")
+MINECRAFT_VERSION = os.getenv("MINECRAFT_VERSION", "1.21.11")
 
 # ========== LỚP KEY POOL ==========
 class GroqKeyPool:
@@ -167,7 +167,7 @@ Chỉ trả về JSON, không kèm markdown. Ví dụ: {{"actions": [{{"type": "
                 client = await self.key_pool.get_client()
                 self.current_client = client
                 response = client.chat.completions.create(
-                    model="mixtral-8x7b-32768",
+                    model="llama-3.3-70b-versatile",
                     messages=[
                         {"role": "system", "content": "Bạn là trợ lý chỉ xuất JSON hợp lệ."},
                         {"role": "user", "content": prompt}
