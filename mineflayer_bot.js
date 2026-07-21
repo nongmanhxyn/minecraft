@@ -1,6 +1,8 @@
 const mineflayer = require('mineflayer');
-const pathfinder = require('mineflayer-pathfinder').pathfinder;
-const { GoalNear } = require('mineflayer-pathfinder').goals;
+const pathfinderPlugin = require('mineflayer-pathfinder');
+const pathfinder = pathfinderPlugin.pathfinder;
+const Movements = pathfinderPlugin.Movements;
+const { GoalNear } = pathfinderPlugin.goals;
 const Vec3 = require('vec3');
 const readline = require('readline');
 
@@ -24,6 +26,7 @@ const HOSTILE_MOBS = new Set([
 const REACH_DISTANCE = 4.0;       // khoảng cách tối đa để đào/đặt/tấn công không cần di chuyển thêm
 const MOVE_TIMEOUT_MS = 20000;    // timeout cho lệnh moveTo
 const APPROACH_TIMEOUT_MS = 10000; // timeout cho bước "lại gần" trước khi đào/đặt/tấn công
+const STUCK_WARN_MS = 12000;      // nếu pathfinder báo đang di chuyển nhưng vị trí không đổi quá lâu -> log cảnh báo
 
 let bot;
 let statusIntervalHandle = null;
@@ -82,6 +85,7 @@ const rl = readline.createInterface({
 
 rl.on('line', (line) => {
     if (!bot) return;
+    console.error(`[${username}] << nhận lệnh thô: ${line}`);
     let cmd;
     try {
         cmd = JSON.parse(line);
@@ -246,19 +250,53 @@ function createBot() {
     }, 60000);
 
     botInstance.on('spawn', () => {
-        console.error(`[${username}] Spawn thành công!`);
+        console.error(`[${username}] Spawn thành công! Vị trí: ${botInstance.entity.position}`);
         if (spawnWatchdogHandle) {
             clearTimeout(spawnWatchdogHandle);
             spawnWatchdogHandle = null;
         }
         if (botInstance.pathfinder) {
             botInstance.pathfinder.thinkTimeout = 5000;
+            // Trước đây không set Movements tường minh: plugin vẫn tự tạo 1 bản mặc định,
+            // nhưng để chắc chắn và dễ chỉnh sau này (vd tắt canDig nếu server lag), set rõ ở đây.
+            const movements = new Movements(botInstance);
+            botInstance.pathfinder.setMovements(movements);
+            console.error(`[${username}] Đã cấu hình Movements (canDig=${movements.canDig}, `
+                + `allow1by1towers=${movements.allow1by1towers})`);
         }
     });
+
+    let lastPos = null;
+    let lastMoveTs = Date.now();
+    let stuckWarned = false;
 
     statusIntervalHandle = setInterval(() => {
         if (!botInstance.entity) return;
         try {
+            // --- Bộ dò "bị kẹt": phát hiện khi pathfinder nghĩ là đang đi nhưng vị trí
+            // không đổi trong thời gian dài (vd bị chặn bởi block, server lag không tick
+            // physics, hoặc gặp lỗi hiếm của pathfinder khi goal nằm sát rìa block). ---
+            const curPos = botInstance.entity.position;
+            if (lastPos) {
+                const moved = curPos.distanceTo(lastPos);
+                if (moved > 0.05) {
+                    lastMoveTs = Date.now();
+                    stuckWarned = false;
+                } else {
+                    const stuckMs = Date.now() - lastMoveTs;
+                    const isMoving = botInstance.pathfinder && botInstance.pathfinder.isMoving();
+                    if (isMoving && stuckMs > STUCK_WARN_MS && !stuckWarned) {
+                        stuckWarned = true;
+                        console.error(
+                            `[${username}] ⚠️ NGHI KẸT: đứng yên ${(stuckMs / 1000).toFixed(1)}s dù pathfinder `
+                            + `đang báo di chuyển. pos=${curPos} onGround=${botInstance.entity.onGround} `
+                            + `velocity=${JSON.stringify(botInstance.entity.velocity)}`
+                        );
+                    }
+                }
+            }
+            lastPos = curPos.clone();
+
             const inventory = botInstance.inventory.items().map((i) => ({
                 name: i.name,
                 count: i.count,
@@ -297,8 +335,11 @@ function createBot() {
         }
     }, 1000);
 
+    // Log đầy đủ mọi trạng thái path_update (không chỉ noPath) để thấy pathfinder đang
+    // làm gì: 'success' (đã tính xong đường), 'timeout' (tính đường quá lâu), 'noPath'.
     botInstance.on('path_update', (r) => {
-        if (r.status === 'noPath') console.error(`[${username}] Không tìm thấy đường đi!`);
+        console.error(`[${username}] path_update: status=${r.status}`
+            + (r.path ? ` (${r.path.length} bước)` : ''));
     });
 
     botInstance.on('death', () => {
