@@ -6,8 +6,8 @@ const readline = require('readline');
 
 const args = process.argv.slice(2);
 const username = args[0] || 'Bot';
-const host = args[1] || 'dynamic-8.magmanode.com';
-const port = parseInt(args[2]) || 25788;
+const host = args[1] || 'testserverhaha.aternos.me';
+const port = parseInt(args[2]) || 25565;
 const version = args[3] || '1.21.11';
 
 // Danh sách mob thù địch dùng để chọn mục tiêu tấn công (mineflayer/minecraft-data
