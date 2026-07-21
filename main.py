@@ -2,7 +2,6 @@ import asyncio
 import itertools
 import json
 import os
-import re
 import sys
 import time
 from typing import Dict, List, Optional, Tuple
@@ -16,8 +15,8 @@ import uvicorn
 load_dotenv()
 
 BOT_NAMES = ["BotAlpha", "BotBeta", "BotGamma"]
-MINECRAFT_HOST = "testserverhaha.aternos.me"
-MINECRAFT_PORT = 25565
+MINECRAFT_HOST = "dynamic-8.magmanode.com"
+MINECRAFT_PORT = 25788
 MINECRAFT_VERSION = "1.21.11"
 
 # --- Giới hạn an toàn cho hành động do AI sinh ra -----------------------------
@@ -36,22 +35,74 @@ ACTION_TIMEOUTS = {
 
 VALID_EQUIP_DESTINATIONS = {"hand", "off-hand", "head", "torso", "legs", "feet"}
 
+# Model Groq dùng cho quyết định của bot. llama-3.1-8b-instant / llama-3.3-70b-versatile
+# sẽ ngừng hoạt động 16/08/2026 (Groq đã thông báo deprecation), nên dùng model thay thế
+# openai/gpt-oss-20b (tier "instant" mới, nhanh & rẻ, Groq khuyến nghị thay cho 8b-instant).
+GROQ_MODEL = "openai/gpt-oss-20b"
 
-def _extract_json(raw: str) -> dict:
-    """Groq bật response_format=json_object nên gần như luôn trả JSON thuần,
-    nhưng vẫn phòng trường hợp model bọc thêm ```json ... ``` hoặc dư khoảng trắng."""
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text).strip()
-        text = re.sub(r"```$", "", text).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # cố gắng lấy khối {...} đầu tiên trong chuỗi trả về
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        raise
+# --- DSL lệnh nhỏ gọn thay cho JSON, để giảm tối đa token output của Groq -----
+# Mỗi dòng AI trả về là 1 lệnh, dạng: TỪ_KHOÁ tham_số...
+DSL_COMMANDS = {"CHAT", "MOVE", "MINE", "PLACE", "EQUIP", "ATTACK", "NOOP"}
+
+
+def parse_dsl_line(line: str) -> Optional[dict]:
+    """Parse 1 dòng lệnh DSL từ Groq thành dict action tương thích với execute_action().
+    Trả None nếu dòng không phải lệnh hợp lệ (rác/giải thích thừa -> bỏ qua an toàn,
+    không làm hỏng các lệnh khác trong cùng phản hồi)."""
+    line = line.strip().strip("`")
+    if not line:
+        return None
+
+    parts = line.split(maxsplit=1)
+    keyword = parts[0].upper()
+    if keyword not in DSL_COMMANDS:
+        return None
+    rest = parts[1] if len(parts) > 1 else ""
+
+    if keyword == "NOOP":
+        return None
+
+    if keyword == "CHAT":
+        sub = rest.split(maxsplit=1)
+        if len(sub) < 2:
+            print(f"Bỏ qua dòng CHAT thiếu nội dung: {line!r}")
+            return None
+        return {"type": "sendMessageToBot", "botName": sub[0], "message": sub[1]}
+
+    if keyword == "MOVE":
+        toks = rest.split()
+        if len(toks) != 3:
+            print(f"Bỏ qua dòng MOVE sai định dạng (cần 3 toạ độ): {line!r}")
+            return None
+        return {"type": "moveTo", "x": toks[0], "y": toks[1], "z": toks[2]}
+
+    if keyword == "MINE":
+        toks = rest.split()
+        if len(toks) != 3:
+            print(f"Bỏ qua dòng MINE sai định dạng (cần 3 toạ độ): {line!r}")
+            return None
+        return {"type": "mineBlock", "x": toks[0], "y": toks[1], "z": toks[2]}
+
+    if keyword == "PLACE":
+        toks = rest.split(maxsplit=3)
+        if len(toks) != 4:
+            print(f"Bỏ qua dòng PLACE sai định dạng (cần 3 toạ độ + tên block): {line!r}")
+            return None
+        return {"type": "placeBlock", "x": toks[0], "y": toks[1], "z": toks[2], "blockName": toks[3]}
+
+    if keyword == "EQUIP":
+        toks = rest.split()
+        if len(toks) < 1:
+            print(f"Bỏ qua dòng EQUIP thiếu itemName: {line!r}")
+            return None
+        item_name = toks[0]
+        destination = toks[1] if len(toks) > 1 else "hand"
+        return {"type": "equipItem", "itemName": item_name, "destination": destination}
+
+    if keyword == "ATTACK":
+        return {"type": "attack", "target": "nearest_hostile"}
+
+    return None
 
 
 class GroqKeyPool:
@@ -240,53 +291,36 @@ class MinecraftBot:
         health = self.state["health"]
         time_of_day = self.state["time"]
 
-        inv_desc = ", ".join([f"{item['count']}x {item['name']}" for item in self.state["inventory"]])
-        if not inv_desc:
-            inv_desc = "Túi đồ trống"
+        inv_desc = ", ".join(f"{it['count']}x{it['name']}" for it in self.state["inventory"]) or "trong"
 
-        entities_desc = "\n".join([
-            f"- {e.get('name')} ({e.get('type')}) ở {e.get('position')}, cách {e.get('distance')}m"
-            for e in self.state["entities"][:10]
-        ])
-        msgs = "\n".join([f"{m['from']}: {m['text']}" for m in self.state["messages"]])
+        near = "; ".join(
+            f"{e.get('name')}@{e.get('distance')}m" for e in self.state["entities"][:8]
+        ) or "khong co"
 
-        other_bots = [b for b in BOT_NAMES if b != self.name]
+        msgs = " | ".join(f"{m['from']}:{m['text']}" for m in self.state["messages"][-5:]) or "khong co"
 
-        return f"""Bạn là bot Minecraft tên {self.name}, đồng đội của {', '.join(other_bots)}.
-Nhiệm vụ: sinh tồn, hỗ trợ đồng đội, làm việc chung.
+        other_bots = ",".join(b for b in BOT_NAMES if b != self.name)
 
-Trạng thái hiện tại:
-- Vị trí (x,y,z): {pos}
-- Máu: {health}/20
-- Thời gian: {time_of_day}
-- Túi đồ: {inv_desc}
-- Thực thể xung quanh (đã sắp xếp gần -> xa):
-{entities_desc if entities_desc else "Không có"}
-- Chat nội bộ gần đây:
-{msgs if msgs else "Không có tin nhắn mới"}
-
-YÊU CẦU BẮT BUỘC:
-1. Trả về DUY NHẤT một object JSON, không kèm text, giải thích hay markdown nào khác.
-2. Object JSON PHẢI luôn có key "actions" là một mảng (có thể là mảng rỗng [] nếu không cần làm gì).
-3. Tất cả tọa độ (x, y, z) PHẢI LÀ SỐ NGUYÊN (Integer), không dùng số thập phân.
-4. Chỉ sử dụng các 'type' hành động sau:
-- "sendMessageToBot": Gửi tin nhắn nội bộ (cần "botName", "message").
-- "moveTo": Đi tới tọa độ (cần "x", "y", "z" là SỐ NGUYÊN).
-- "mineBlock": Đập block tại tọa độ (cần "x", "y", "z" là SỐ NGUYÊN).
-- "placeBlock": Đặt block (cần "x", "y", "z" là SỐ NGUYÊN, "blockName" là tên block bằng tiếng Anh vd: "dirt", "cobblestone").
-- "equipItem": Cầm đồ ra tay hoặc mặc giáp (cần "itemName" bằng tiếng Anh, "destination" chọn 1 trong: "hand", "head", "torso", "legs", "feet").
-- "attack": Tấn công (cần "target": "nearest_hostile").
-5. Mỗi hành động di chuyển/đào/đặt nên nằm trong bán kính khoảng {MAX_MOVE_DISTANCE} block quanh vị trí hiện tại.
-
-Khuôn mẫu JSON trả về:
-{{
-  "actions": [
-    {{"type": "sendMessageToBot", "botName": "{other_bots[0]}", "message": "Tới phụ t đập đá ở tọa độ này nè!"}},
-    {{"type": "equipItem", "itemName": "iron_pickaxe", "destination": "hand"}},
-    {{"type": "moveTo", "x": 100, "y": 64, "z": -200}},
-    {{"type": "mineBlock", "x": 100, "y": 63, "z": -200}}
-  ]
-}}"""
+        # Prompt cố tình viết không dấu ở phần hướng dẫn (không phải dữ liệu) để giảm token
+        # và tránh model chép nhầm dấu câu vào bên trong lệnh.
+        return (
+            f"BOT {self.name} team:{other_bots}\n"
+            f"POS {pos[0]} {pos[1]} {pos[2]} HP {health} TIME {time_of_day}\n"
+            f"INV {inv_desc}\n"
+            f"NEAR {near}\n"
+            f"MSG {msgs}\n"
+            "\n"
+            f"Tra loi bang LENH, moi dong 1 lenh, toa do la SO NGUYEN, trong ban kinh {MAX_MOVE_DISTANCE} block:\n"
+            "CHAT <bot> <noi dung>\n"
+            "MOVE <x> <y> <z>\n"
+            "MINE <x> <y> <z>\n"
+            "PLACE <x> <y> <z> <block_en>\n"
+            "EQUIP <item_en> <hand|head|torso|legs|feet>\n"
+            "ATTACK\n"
+            "NOOP\n"
+            "Neu khong can lam gi thi tra dung 1 dong NOOP.\n"
+            "CHI TRA CAC DONG LENH O TREN. KHONG giai thich. KHONG markdown. KHONG JSON."
+        )
 
     # ------------------------------------------------------------------ #
     # Gọi Groq
@@ -299,15 +333,16 @@ Khuôn mẫu JSON trả về:
             try:
                 client = await self.key_pool.get_client()
                 response = await client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model=GROQ_MODEL,
                     messages=[
-                        {"role": "system", "content": "Bạn là AI điều khiển Minecraft, output 100% JSON hợp lệ, "
-                                                       "không thêm bất kỳ ký tự nào ngoài JSON."},
+                        {"role": "system", "content": "Ban la AI dieu khien bot Minecraft. Chi tra ve cac dong "
+                                                       "lenh DSL (CHAT/MOVE/MINE/PLACE/EQUIP/ATTACK/NOOP), "
+                                                       "khong JSON, khong markdown, khong giai thich."},
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.3,
-                    max_tokens=1600,  # tăng so với 500: tránh JSON bị cắt cụt khi có nhiều action
-                    response_format={"type": "json_object"},
+                    max_tokens=300,  # DSL rất ngắn gọn so với JSON -> giảm mạnh token output & né rate limit
+                    # Không dùng response_format=json_object nữa vì output giờ là text DSL, không phải JSON.
                 )
                 return response.choices[0].message.content
             except RateLimitError:
@@ -328,22 +363,17 @@ Khuôn mẫu JSON trả về:
             print(f"[{self.name}] Lỗi gọi Groq: {e}")
             return
 
-        try:
-            data = _extract_json(content)
-        except json.JSONDecodeError as e:
-            print(f"[{self.name}] Groq trả JSON không hợp lệ ({e}). Raw (300 ký tự đầu): {content[:300]!r}")
-            return
-
-        actions = data.get("actions")
-        if not isinstance(actions, list):
-            print(f"[{self.name}] Groq không trả 'actions' hợp lệ (thiếu hoặc sai kiểu): {data}")
-            return
+        actions = []
+        for raw_line in content.splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("```"):
+                continue  # bỏ qua dòng trống / model lỡ bọc code fence dù đã được dặn không làm vậy
+            parsed = parse_dsl_line(stripped)
+            if parsed:
+                actions.append(parsed)
 
         self.state["last_action"] = actions
         for action in actions:
-            if not isinstance(action, dict):
-                print(f"[{self.name}] Bỏ qua action không phải object: {action}")
-                continue
             await self.execute_action(action)
 
     async def decision_loop(self):
