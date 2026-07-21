@@ -222,6 +222,16 @@ class MinecraftBot:
                         pass
                     self.last_status_ts = time.monotonic()
 
+    async def status_logger(self):
+        """In log định kỳ (không phụ thuộc có quyết định mới hay không) để có một
+        dòng thời gian độc lập, dễ đối chiếu với ảnh chụp màn hình/thời điểm bot
+        'đứng yên' khi debug."""
+        while not self.stop_event.is_set():
+            await asyncio.sleep(15)
+            alive = bool(self.process and self.process.returncode is None)
+            print(f"[{self.name}] 📍 heartbeat: pos={self.state['position']} hp={self.state['health']} "
+                  f"process_alive={alive} pending_actions={len(self.pending_actions)}")
+
     async def read_stderr(self):
         try:
             while self.process and self.process.returncode is None:
@@ -363,14 +373,21 @@ class MinecraftBot:
             print(f"[{self.name}] Lỗi gọi Groq: {e}")
             return
 
+        preview = content.strip().replace("\n", " | ")[:200]
+        print(f"[{self.name}] 🤖 Groq trả về: {preview}")
+
         actions = []
+        total_lines = 0
         for raw_line in content.splitlines():
             stripped = raw_line.strip()
             if not stripped or stripped.startswith("```"):
                 continue  # bỏ qua dòng trống / model lỡ bọc code fence dù đã được dặn không làm vậy
+            total_lines += 1
             parsed = parse_dsl_line(stripped)
             if parsed:
                 actions.append(parsed)
+
+        print(f"[{self.name}] -> parse được {len(actions)}/{total_lines} dòng thành hành động hợp lệ")
 
         self.state["last_action"] = actions
         for action in actions:
@@ -561,6 +578,7 @@ async def main():
         asyncio.create_task(bot.decision_loop())
         asyncio.create_task(bot.message_processor())
         asyncio.create_task(bot.watchdog())
+        asyncio.create_task(bot.status_logger())
         await asyncio.sleep(4)
 
     print("Khởi động done!")
