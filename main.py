@@ -16,8 +16,8 @@ import uvicorn
 load_dotenv()
 
 BOT_NAMES = ["BotAlpha", "BotBeta", "BotGamma"]
-MINECRAFT_HOST = "dynamic-8.magmanode.com"
-MINECRAFT_PORT = 25788
+MINECRAFT_HOST = "testserverhaha.aternos.me"
+MINECRAFT_PORT = 25565
 MINECRAFT_VERSION = "1.21.11"
 
 # --- Giới hạn an toàn cho hành động do AI sinh ra -----------------------------
